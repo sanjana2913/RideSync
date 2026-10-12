@@ -1,21 +1,92 @@
 import { useState } from 'react';
 import './App.css';
 
+const API_BASE_URL = 'http://localhost:8080/api/rides';
+
+async function readResponse(response) {
+  const text = await response.text();
+
+  let data = null;
+
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.message ||
+        data?.error ||
+        `Request failed (${response.status})`
+    );
+  }
+
+  return data;
+}
+
 function App() {
   const [pickup, setPickup] = useState('');
   const [destination, setDestination] = useState('');
   const [search, setSearch] = useState(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [bookingId, setBookingId] = useState('');
+  const [bookingLoading, setBookingLoading] = useState(false);
+
+  async function searchRides(start, end) {
+    const response = await fetch(`${API_BASE_URL}/search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        pickup: start,
+        destination: end,
+      }),
+    });
+
+    const data = await readResponse(response);
+
+    // Supports either an array or an object containing rides.
+    const rides = Array.isArray(data)
+      ? data
+      : Array.isArray(data?.rides)
+        ? data.rides
+        : null;
+
+    if (!rides) {
+      throw new Error(
+        'Unexpected response from the server. Expected a list of rides.'
+      );
+    }
+
+    setSearch({
+      pickup: start,
+      destination: end,
+      rides,
+    });
+
+    if (rides.length === 0) {
+      setMessage(
+        'No available rides found for this route. Try another route.'
+      );
+    }
+
+    return rides;
+  }
 
   async function handleSearch(event) {
     event.preventDefault();
 
-    setMessage('');
-    setSearch(null);
-
     const start = pickup.trim();
     const end = destination.trim();
+
+    setMessage('');
+    setBookingId('');
+    setSearch(null);
 
     if (!start || !end) {
       setMessage('Please enter both pickup and destination.');
@@ -30,40 +101,11 @@ function App() {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        'http://localhost:8080/api/rides/search',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            pickup: start,
-            destination: end
-          })
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error('Ride search failed.');
-      }
-
-      const data = await response.json();
-
-      setSearch({
-        pickup: start,
-        destination: end,
-        rides: Array.isArray(data) ? data : []
-      });
-
-      if (!Array.isArray(data) || data.length === 0) {
-        setMessage(
-          'No available rides found for this route. Please try another route.'
-        );
-      }
+      await searchRides(start, end);
     } catch (error) {
       setMessage(
-        'Could not connect to RideSync. Please make sure the backend is running.'
+        error.message ||
+          'Could not connect to RideSync. Check whether the backend is running.'
       );
     } finally {
       setLoading(false);
@@ -75,63 +117,97 @@ function App() {
     setDestination('');
     setSearch(null);
     setMessage('');
+    setBookingId('');
   }
 
   async function handleBooking(ride) {
-    const passenger = prompt('Enter your name:');
+    if (bookingLoading) return;
 
-    if (!passenger || !passenger.trim()) {
+    const availableSeats = Number(ride.seats);
+
+    if (
+      ride.id == null ||
+      !Number.isInteger(availableSeats) ||
+      availableSeats <= 0
+    ) {
+      setMessage('This ride has invalid details or no available seats.');
       return;
     }
 
-    const seats = prompt('How many seats do you want to book?');
+    const passenger = window.prompt('Enter your name:');
 
-    if (!seats || !/^\d+$/.test(seats.trim()) ||
-        Number(seats) < 1) {
-      alert('Please enter a valid number of seats.');
+    if (passenger === null || !passenger.trim()) {
       return;
     }
 
-    if (Number(seats) > Number(ride.seats)) {
-      alert('Not enough seats are available.');
+    const seatsInput = window.prompt(
+      `How many seats do you want to book? (Available: ${availableSeats})`
+    );
+
+    if (seatsInput === null) return;
+
+    const seatsText = seatsInput.trim();
+    const seats = Number(seatsText);
+
+    if (
+      !/^\d+$/.test(seatsText) ||
+      !Number.isSafeInteger(seats) ||
+      seats < 1
+    ) {
+      window.alert('Please enter a valid positive number of seats.');
       return;
     }
+
+    if (seats > availableSeats) {
+      window.alert('Not enough seats are available.');
+      return;
+    }
+
+    setBookingLoading(true);
+    setMessage('');
+    setBookingId('');
 
     try {
-      const response = await fetch(
-        'http://localhost:8080/api/rides/book',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            rideId: String(ride.id),
-            passenger: passenger.trim(),
-            seats: String(seats)
-          })
-        }
+      const response = await fetch(`${API_BASE_URL}/book`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          rideId: ride.id,
+          passenger: passenger.trim(),
+          seats,
+        }),
+      });
+
+      const data = await readResponse(response);
+
+      setBookingId(
+        data?.bookingId != null
+          ? String(data.bookingId)
+          : ''
       );
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        alert(
-          data.message ||
-          data.error ||
-          'Booking failed.'
-        );
-        return;
-      }
-
-      alert(
-        'Ride booked successfully! Booking ID: ' +
-        data.bookingId
+      window.alert(
+        data?.bookingId != null
+          ? `Ride booked successfully! Booking ID: ${data.bookingId}`
+          : 'Ride booked successfully!'
       );
 
-      await handleSearch({ preventDefault: () => {} });
+      // Refresh results directly without simulating a form event.
+      await searchRides(
+        search.pickup,
+        search.destination
+      );
+
+      setMessage('Booking completed successfully.');
     } catch (error) {
-      alert('Could not connect to the backend.');
+      setMessage(
+        error.message ||
+          'Booking failed. Please check your connection and try again.'
+      );
+    } finally {
+      setBookingLoading(false);
     }
   }
 
@@ -156,9 +232,7 @@ function App() {
       <main id="home">
         <section className="hero">
           <div className="hero-content">
-            <p className="tagline">
-              YOUR JOURNEY, SIMPLIFIED
-            </p>
+            <p className="tagline">YOUR JOURNEY, SIMPLIFIED</p>
 
             <h1>
               Move smarter.
@@ -190,7 +264,9 @@ function App() {
               </div>
             </div>
 
-            <div className="car">🚘</div>
+            <div className="car" aria-label="Car">
+              🚘
+            </div>
 
             <div className="location-card destination-card">
               <span className="destination-dot"></span>
@@ -204,31 +280,22 @@ function App() {
 
         <section className="booking-section" id="book">
           <div className="section-heading">
-            <p className="tagline">
-              LET'S GET YOU THERE
-            </p>
-
+            <p className="tagline">LET'S GET YOU THERE</p>
             <h2>Where would you like to go?</h2>
-
             <p>
               Enter your starting point and destination
               to find matching rides.
             </p>
           </div>
 
-          <form
-            className="booking-form"
-            onSubmit={handleSearch}
-          >
+          <form className="booking-form" onSubmit={handleSearch}>
             <label>
               Pickup Location
               <input
                 type="text"
                 placeholder="Enter pickup location"
                 value={pickup}
-                onChange={(event) =>
-                  setPickup(event.target.value)
-                }
+                onChange={(event) => setPickup(event.target.value)}
                 required
               />
             </label>
@@ -249,7 +316,7 @@ function App() {
             <button
               type="submit"
               className="search-btn"
-              disabled={loading}
+              disabled={loading || bookingLoading}
             >
               {loading ? 'Searching...' : 'Find a Ride'}
             </button>
@@ -262,10 +329,7 @@ function App() {
           )}
 
           {search && (
-            <div
-              className="search-results"
-              aria-live="polite"
-            >
+            <div className="search-results" aria-live="polite">
               <h2>Available Rides</h2>
 
               <div className="journey-detail">
@@ -285,79 +349,95 @@ function App() {
               </div>
 
               {search.rides.length > 0 ? (
-                search.rides.map((ride, index) => (
-                  <div
-                    className="ride-card"
-                    key={ride.id ?? index}
-                  >
-                    <h3>
-                      🚘 {ride.driver ||
-                        'Driver details unavailable'}
-                    </h3>
+                search.rides.map((ride, index) => {
+                  const seats = Number(ride.seats ?? 0);
+                  const price =
+                    ride.pricePerSeat ??
+                    ride.price_per_seat;
 
-                    <p>
-                      <strong>Pickup:</strong>{' '}
-                      {ride.pickup}
-                    </p>
-
-                    <p>
-                      <strong>Destination:</strong>{' '}
-                      {ride.destination}
-                    </p>
-
-                    <p>
-                      <strong>Available seats:</strong>{' '}
-                      {ride.seats}
-                    </p>
-
-                    <p>
-                      <strong>Departure Time:</strong>{' '}
-                      {ride.departureTime ??
-                        ride.departure_time ??
-                        'Time not provided'}
-                    </p>
-
-                    <p>
-                      <strong>Price per Seat:</strong>{' '}
-                      {ride.pricePerSeat != null
-                        ? `₹${ride.pricePerSeat}`
-                        : ride.price_per_seat != null
-                        ? `₹${ride.price_per_seat}`
-                        : 'Price not provided'}
-                    </p>
-
-                    <p>
-                      <strong>Availability:</strong>{' '}
-                      {ride.availability ||
-                        (Number(ride.seats) > 0
-                          ? 'Available'
-                          : 'Full')}
-                    </p>
-
-                    <button
-                      type="button"
-                      className="search-btn"
-                      disabled={Number(ride.seats) <= 0}
-                      onClick={() => handleBooking(ride)}
+                  return (
+                    <div
+                      className="ride-card"
+                      key={ride.id ?? index}
                     >
-                      Book Ride
-                    </button>
-                  </div>
-                ))
+                      <h3>
+                        🚘{' '}
+                        {ride.driver ||
+                          'Driver details unavailable'}
+                      </h3>
+
+                      <p>
+                        <strong>Pickup:</strong>{' '}
+                        {ride.pickup || 'Not provided'}
+                      </p>
+
+                      <p>
+                        <strong>Destination:</strong>{' '}
+                        {ride.destination || 'Not provided'}
+                      </p>
+
+                      <p>
+                        <strong>Available seats:</strong>{' '}
+                        {Number.isFinite(seats) ? seats : 'Unknown'}
+                      </p>
+
+                      <p>
+                        <strong>Departure Time:</strong>{' '}
+                        {ride.departureTime ??
+                          ride.departure_time ??
+                          'Time not provided'}
+                      </p>
+
+                      <p>
+                        <strong>Price per Seat:</strong>{' '}
+                        {price != null
+                          ? `₹${price}`
+                          : 'Price not provided'}
+                      </p>
+
+                      <p>
+                        <strong>Availability:</strong>{' '}
+                        {ride.availability ||
+                          (seats > 0 ? 'Available' : 'Full')}
+                      </p>
+
+                      <button
+                        type="button"
+                        className="search-btn"
+                        disabled={
+                          bookingLoading ||
+                          !Number.isInteger(seats) ||
+                          seats <= 0 ||
+                          ride.id == null
+                        }
+                        onClick={() => handleBooking(ride)}
+                      >
+                        {bookingLoading
+                          ? 'Processing...'
+                          : 'Book Ride'}
+                      </button>
+                    </div>
+                  );
+                })
               ) : (
-                <p>
-                  No matching rides are currently available.
-                </p>
+                <p>No matching rides are currently available.</p>
               )}
 
               <button
                 type="button"
                 className="search-btn"
                 onClick={handleReset}
+                disabled={bookingLoading}
               >
                 Search Another Route
               </button>
             </div>
+          )}
+
+          {bookingId && (
+            <p className="form-message" role="status">
+              Your booking reference is {bookingId}.
+            </p>
           )}
         </section>
 
@@ -377,9 +457,7 @@ function App() {
 
         <p>Making every journey simpler.</p>
 
-        <small>
-          © 2026 RideSync. All rights reserved.
-        </small>
+        <small>© 2026 RideSync. All rights reserved.</small>
       </footer>
     </div>
   );
